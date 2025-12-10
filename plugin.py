@@ -6,12 +6,12 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from src.plugin_system import (
+    ActionActivationType,
+    BaseAction,
     BasePlugin,
-    BaseTool,
     ComponentInfo,
     ConfigField,
     PythonDependency,
-    ToolParamType,
     get_logger,
     register_plugin,
 )
@@ -563,62 +563,44 @@ def load_pulse_presets_from_dir(base_dir: Path, subdir: str) -> None:
         PRESET_PULSES[preset_name] = pulses
 
 
-class CoyoteConnectTool(BaseTool):
+class CoyoteConnectAction(BaseAction):
     """建立与 DG-Lab App 的连接并获取二维码。"""
 
-    name = "coyote_connect"
-    description = "连接 DG-Lab WebSocket 服务端，返回用于 App 扫码绑定的二维码链接"
-    parameters = [
-        (
-            "server_uri",
-            ToolParamType.STRING,
-            "可选：DG-Lab WebSocket 服务端地址，如 ws://127.0.0.1:5678，默认使用插件配置 connection.server_uri",
-            False,
-            None,
-        ),
-        (
-            "register_timeout",
-            ToolParamType.FLOAT,
-            "可选：终端注册超时时间（秒），默认使用插件配置 connection.register_timeout",
-            False,
-            None,
-        ),
-        (
-            "bind_timeout",
-            ToolParamType.FLOAT,
-            "可选：等待 App 扫码绑定的超时时间（秒），<=0 表示不等待，默认使用插件配置 connection.bind_timeout",
-            False,
-            None,
-        ),
+    action_name = "coyote_connect"
+    action_description = "连接 DG-Lab WebSocket 服务端，返回用于 App 扫码绑定的二维码链接"
+    activation_type = ActionActivationType.ALWAYS
+    associated_types = ["text"]
+    parallel_action = False
+
+    action_parameters = {
+        "server_uri": "可选：覆盖配置 connection.server_uri 的 DG-Lab WebSocket 地址，例如 ws://127.0.0.1:5678。",
+        "register_timeout": "可选：终端注册超时时间（秒），默认使用配置 connection.register_timeout。",
+        "bind_timeout": "可选：等待 App 扫码绑定的超时时间（秒），<=0 表示不等待，默认使用配置 connection.bind_timeout。",
+    }
+
+    action_require = [
+        "当用户明确要求连接或重新连接郊狼 / DG-Lab 设备，或需要二维码进行绑定时使用本 Action。",
+        "当控制强度或波形时提示未绑定 App 时，可以先调用本 Action 引导用户扫码绑定。",
+        "如果当前会话已经成功绑定且连接稳定，不要频繁重复调用，除非用户要求重连或更换设备。",
     ]
-    available_for_llm = True
 
-    async def execute(self, function_args: Dict[str, Any]) -> Dict[str, Any]:
+    async def execute(self) -> Tuple[bool, str]:
         if not _COYOTE_MANAGER.available:
-            return {
-                "name": self.name,
-                "content": "pydglab_ws 未安装或导入失败，请先安装 pydglab-ws 库或确认插件内置依赖路径可用",
-                "ok": False,
-            }
+            msg = "pydglab_ws 未安装或导入失败，请先安装 pydglab-ws 库或确认插件内置依赖路径可用。"
+            await self.send_text(msg)
+            return False, msg
 
-        server_uri_arg = function_args.get("server_uri")
+        data = self.action_data or {}
+        server_uri_arg = data.get("server_uri")
         server_uri_cfg = self.get_config("connection.server_uri", "")
         server_uri = (server_uri_arg or server_uri_cfg or "").strip()
         if not server_uri:
-            return {
-                "name": self.name,
-                "content": "未配置 DG-Lab WebSocket 服务端地址，请在插件配置 connection.server_uri 中设置或通过工具参数传入",
-                "ok": False,
-            }
+            msg = "未配置 DG-Lab WebSocket 服务端地址，请在插件配置 connection.server_uri 中设置或通过参数 server_uri 传入。"
+            await self.send_text(msg)
+            return False, msg
 
-        register_timeout = function_args.get(
-            "register_timeout",
-            self.get_config("connection.register_timeout", 10.0),
-        )
-        bind_timeout = function_args.get(
-            "bind_timeout",
-            self.get_config("connection.bind_timeout", 60.0),
-        )
+        register_timeout = data.get("register_timeout", self.get_config("connection.register_timeout", 10.0))
+        bind_timeout = data.get("bind_timeout", self.get_config("connection.bind_timeout", 60.0))
 
         try:
             result = await _COYOTE_MANAGER.get_qrcode_and_maybe_bind(
@@ -628,11 +610,9 @@ class CoyoteConnectTool(BaseTool):
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("[Coyote] 连接 DG-Lab 服务端失败")
-            return {
-                "name": self.name,
-                "content": f"连接 DG-Lab 服务端失败: {exc}",
-                "ok": False,
-            }
+            msg = f"连接 DG-Lab 服务端失败: {exc}"
+            await self.send_text(msg)
+            return False, msg
 
         qrcode_url = result.get("qrcode_url") or ""
         bind_desc = ""
@@ -643,74 +623,53 @@ class CoyoteConnectTool(BaseTool):
             f"已连接 DG-Lab 服务端，二维码链接：{qrcode_url or '获取失败'}{bind_desc}。"
             "请使用 DG-Lab App 扫描二维码完成绑定。"
         )
-
-        return {
-            "name": self.name,
-            "content": content,
-            "ok": True,
-            "qrcode_url": qrcode_url,
-            "bind_success": result.get("bind_success"),
-            "bind_result": result.get("bind_result"),
-            "status": result.get("status"),
-        }
+        await self.send_text(content)
+        return True, content
 
 
-class CoyoteSetStrengthTool(BaseTool):
+class CoyoteSetStrengthAction(BaseAction):
     """控制 DG-Lab A/B 通道强度。"""
 
-    name = "coyote_set_strength"
-    description = "设置郊狼 A/B 通道的强度，可选择设定绝对值或相对增减"
-    parameters = [
-        (
-            "channel",
-            ToolParamType.STRING,
-            "目标通道，仅支持 A 或 B",
-            True,
-            ["A", "B"],
-        ),
-        (
-            "mode",
-            ToolParamType.STRING,
-            "强度模式：set=设定绝对值，increase=相对增加，decrease=相对减少",
-            True,
-            ["set", "increase", "decrease"],
-        ),
-        (
-            "value",
-            ToolParamType.INTEGER,
-            "强度数值，范围建议在 0-200 之间；对于 increase/decrease 表示增量",
-            True,
-            None,
-        ),
-    ]
-    available_for_llm = True
+    action_name = "coyote_set_strength"
+    action_description = "设置郊狼 A/B 通道的强度，可选择设定绝对值或相对增减"
+    activation_type = ActionActivationType.ALWAYS
+    associated_types = ["text"]
+    parallel_action = False
 
-    async def execute(self, function_args: Dict[str, Any]) -> Dict[str, Any]:
+    action_parameters = {
+        "channel": "目标通道，仅支持 'A' 或 'B'。",
+        "mode": "强度模式：set=设定绝对值，increase=相对增加，decrease=相对减少。",
+        "value": "强度数值，建议在 0-200 之间；对于 increase/decrease 表示增量。",
+    }
+
+    action_require = [
+        "当用户明确要求调高、调低或设置郊狼某个通道的强度时使用本 Action。",
+        "首次为当前会话控制强度时，应从较低强度开始（例如 10~30），在用户确认可以接受后再逐步提高。",
+        "当用户表示不适或要求停止时，应优先将强度设为 0 并提示已关闭输出。",
+        "避免在短时间内多次将强度从很低直接设置到接近上限，除非用户明确要求且确认安全。",
+    ]
+
+    async def execute(self) -> Tuple[bool, str]:
         if not _COYOTE_MANAGER.available:
-            return {
-                "name": self.name,
-                "content": "pydglab_ws 未安装或导入失败，请先安装 pydglab-ws 库或确认插件内置依赖路径可用",
-                "ok": False,
-            }
+            msg = "pydglab_ws 未安装或导入失败，请先安装 pydglab-ws 库或确认插件内置依赖路径可用。"
+            await self.send_text(msg)
+            return False, msg
 
         server_uri = (self.get_config("connection.server_uri", "") or "").strip()
         if not server_uri:
-            return {
-                "name": self.name,
-                "content": "未配置 DG-Lab WebSocket 服务端地址，请先通过 coyote_connect 完成初始化",
-                "ok": False,
-            }
+            msg = "未配置 DG-Lab WebSocket 服务端地址，请先通过 coyote_connect 完成初始化。"
+            await self.send_text(msg)
+            return False, msg
 
-        channel = str(function_args.get("channel", "")).strip()
-        mode = str(function_args.get("mode", "")).strip()
+        data = self.action_data or {}
+        channel = str(data.get("channel", "")).strip()
+        mode = str(data.get("mode", "")).strip()
         try:
-            value = int(function_args.get("value"))
+            value = int(data.get("value"))
         except (TypeError, ValueError):
-            return {
-                "name": self.name,
-                "content": "参数 value 无法转换为整数",
-                "ok": False,
-            }
+            msg = "参数 value 无法转换为整数。"
+            await self.send_text(msg)
+            return False, msg
 
         max_value = int(self.get_config("control.max_intensity", 200))
         bind_timeout = float(self.get_config("connection.bind_timeout", 60.0))
@@ -727,99 +686,81 @@ class CoyoteSetStrengthTool(BaseTool):
             heartbeat_interval=heartbeat_interval,
         )
 
-        return {
-            "name": self.name,
-            "content": message,
-            "ok": ok,
-        }
+        await self.send_text(message)
+        return ok, message
 
 
-class CoyoteAddWaveformTool(BaseTool):
+class CoyoteAddWaveformAction(BaseAction):
     """下发 DG-Lab 波形数据。"""
 
-    name = "coyote_add_waveform"
-    description = "向郊狼设备追加波形数据，控制 A/B 通道的波形输出"
-    parameters = [
-        (
-            "channel",
-            ToolParamType.STRING,
-            "目标通道，仅支持 A 或 B",
-            True,
-            ["A", "B"],
-        ),
-        (
-            "pulses_json",
-            ToolParamType.STRING,
-            "波形数据 JSON 字符串，格式示例: "
-            '[{"frequency":[10,20,30,40],"strength":[10,20,30,40]}]，'
-            "frequency 为 4 个频率，strength 为 4 个强度",
-            True,
-            None,
-        ),
-    ]
-    available_for_llm = True
+    action_name = "coyote_add_waveform"
+    action_description = "向郊狼设备追加波形数据，控制 A/B 通道的波形输出"
+    activation_type = ActionActivationType.ALWAYS
+    associated_types = ["text"]
+    parallel_action = False
 
-    async def execute(self, function_args: Dict[str, Any]) -> Dict[str, Any]:
+    action_parameters = {
+        "channel": "目标通道，仅支持 'A' 或 'B'。",
+        "pulses_json": (
+            "波形数据 JSON 字符串，格式示例："
+            '[{\"frequency\":[10,20,30,40],\"strength\":[10,20,30,40]}]，'
+            "frequency 为 4 个频率，strength 为 4 个强度。"
+        ),
+    }
+
+    action_require = [
+        "当需要根据自定义 JSON 波形数据精细控制输出时使用本 Action。",
+        "一般用户只需要使用预设波形，除非用户准备好了明确的频率/强度数组。",
+    ]
+
+    async def execute(self) -> Tuple[bool, str]:
         if not _COYOTE_MANAGER.available:
-            return {
-                "name": self.name,
-                "content": "pydglab_ws 未安装或导入失败，请先安装 pydglab-ws 库或确认插件内置依赖路径可用",
-                "ok": False,
-            }
+            msg = "pydglab_ws 未安装或导入失败，请先安装 pydglab-ws 库或确认插件内置依赖路径可用。"
+            await self.send_text(msg)
+            return False, msg
 
         server_uri = (self.get_config("connection.server_uri", "") or "").strip()
         if not server_uri:
-            return {
-                "name": self.name,
-                "content": "未配置 DG-Lab WebSocket 服务端地址，请先通过 coyote_connect 完成初始化",
-                "ok": False,
-            }
+            msg = "未配置 DG-Lab WebSocket 服务端地址，请先通过 coyote_connect 完成初始化。"
+            await self.send_text(msg)
+            return False, msg
 
-        channel = str(function_args.get("channel", "")).strip()
-        pulses_raw = function_args.get("pulses_json")
+        data = self.action_data or {}
+        channel = str(data.get("channel", "")).strip()
+        pulses_raw = data.get("pulses_json")
         if not pulses_raw:
-            return {
-                "name": self.name,
-                "content": "缺少参数 pulses_json",
-                "ok": False,
-            }
+            msg = "缺少参数 pulses_json。"
+            await self.send_text(msg)
+            return False, msg
 
         try:
             pulses_data = json.loads(pulses_raw)
         except json.JSONDecodeError as exc:
-            return {
-                "name": self.name,
-                "content": f"解析波形 JSON 失败: {exc}",
-                "ok": False,
-            }
+            msg = f"解析波形 JSON 失败: {exc}"
+            await self.send_text(msg)
+            return False, msg
 
         if isinstance(pulses_data, dict):
             pulses_list = [pulses_data]
         elif isinstance(pulses_data, list):
             pulses_list = pulses_data
         else:
-            return {
-                "name": self.name,
-                "content": "pulses_json 必须是对象或对象数组",
-                "ok": False,
-            }
+            msg = "pulses_json 必须是对象或对象数组。"
+            await self.send_text(msg)
+            return False, msg
 
         parsed_pulses: List[Tuple[List[int], List[int]]] = []
         for index, pulse in enumerate(pulses_list, start=1):
             if not isinstance(pulse, dict):
-                return {
-                    "name": self.name,
-                    "content": f"第 {index} 个波形数据不是对象",
-                    "ok": False,
-                }
+                msg = f"第 {index} 个波形数据不是对象。"
+                await self.send_text(msg)
+                return False, msg
             freqs = pulse.get("frequency") or pulse.get("freq")
             strengths = pulse.get("strength") or pulse.get("amplitude")
             if not isinstance(freqs, list) or not isinstance(strengths, list):
-                return {
-                    "name": self.name,
-                    "content": f"第 {index} 个波形数据的 frequency/strength 不是数组",
-                    "ok": False,
-                }
+                msg = f"第 {index} 个波形数据的 frequency/strength 不是数组。"
+                await self.send_text(msg)
+                return False, msg
             parsed_pulses.append((freqs, strengths))
 
         ok, message = await _COYOTE_MANAGER.add_pulses(
@@ -829,107 +770,91 @@ class CoyoteAddWaveformTool(BaseTool):
             pulses=parsed_pulses,
         )
 
-        return {
-            "name": self.name,
-            "content": message,
-            "ok": ok,
-        }
+        await self.send_text(message)
+        return ok, message
 
 
-class CoyoteClearWaveformTool(BaseTool):
+class CoyoteClearWaveformAction(BaseAction):
     """清空指定通道的波形队列。"""
 
-    name = "coyote_clear_waveform"
-    description = "清空郊狼设备某个通道的波形队列"
-    parameters = [
-        (
-            "channel",
-            ToolParamType.STRING,
-            "目标通道，仅支持 A 或 B",
-            True,
-            ["A", "B"],
-        ),
-    ]
-    available_for_llm = True
+    action_name = "coyote_clear_waveform"
+    action_description = "清空郊狼设备某个通道的波形队列，并停止该通道的循环任务"
+    activation_type = ActionActivationType.ALWAYS
+    associated_types = ["text"]
+    parallel_action = False
 
-    async def execute(self, function_args: Dict[str, Any]) -> Dict[str, Any]:
+    action_parameters = {
+        "channel": "目标通道，仅支持 'A' 或 'B'。",
+    }
+
+    action_require = [
+        "当用户希望停止某个通道的输出、切换波形、或结束本轮玩法时使用本 Action。",
+        "在需要重置波形队列或准备切换到完全不同的预设前，也可以先调用本 Action。",
+    ]
+
+    async def execute(self) -> Tuple[bool, str]:
         if not _COYOTE_MANAGER.available:
-            return {
-                "name": self.name,
-                "content": "pydglab_ws 未安装或导入失败，请先安装 pydglab-ws 库或确认插件内置依赖路径可用",
-                "ok": False,
-            }
+            msg = "pydglab_ws 未安装或导入失败，请先安装 pydglab-ws 库或确认插件内置依赖路径可用。"
+            await self.send_text(msg)
+            return False, msg
 
         server_uri = (self.get_config("connection.server_uri", "") or "").strip()
         if not server_uri:
-            return {
-                "name": self.name,
-                "content": "未配置 DG-Lab WebSocket 服务端地址，请先通过 coyote_connect 完成初始化",
-                "ok": False,
-            }
+            msg = "未配置 DG-Lab WebSocket 服务端地址，请先通过 coyote_connect 完成初始化。"
+            await self.send_text(msg)
+            return False, msg
 
-        channel = str(function_args.get("channel", "")).strip()
+        data = self.action_data or {}
+        channel = str(data.get("channel", "")).strip()
         ok, message = await _COYOTE_MANAGER.clear_pulses(
             server_uri=server_uri,
             register_timeout=float(self.get_config("connection.register_timeout", 10.0)),
             channel_name=channel,
         )
 
-        return {
-            "name": self.name,
-            "content": message,
-            "ok": ok,
-        }
+        await self.send_text(message)
+        return ok, message
 
 
-class CoyotePlayPresetTool(BaseTool):
-    """在指定通道播放内置预设波形。"""
+class CoyotePlayPresetAction(BaseAction):
+    """在指定通道播放内置或 .pulse 预设波形。"""
 
-    name = "coyote_play_preset"
-    description = "在指定通道播放预设好的郊狼波形（steady/pulse/wave 等）"
-    parameters = [
-        (
-            "channel",
-            ToolParamType.STRING,
-            "目标通道，仅支持 A 或 B",
-            True,
-            ["A", "B"],
-        ),
-        (
-            "preset",
-            ToolParamType.STRING,
-            "预设波形名称，可选：steady（稳定）、pulse（脉冲）、wave（波浪），"
-            "或放在 pulse_dir 目录下的 .pulse 文件名（不含扩展名）",
-            True,
-            None,
-        ),
+    action_name = "coyote_play_preset"
+    action_description = "在指定通道播放预设好的郊狼波形（steady/pulse/wave 或 .pulse 文件预设），并以循环模式持续输出"
+    activation_type = ActionActivationType.ALWAYS
+    associated_types = ["text"]
+    parallel_action = False
+
+    action_parameters = {
+        "channel": "目标通道，仅支持 'A' 或 'B'。",
+        "preset": "预设波形名称，可选：steady（稳定）、pulse（脉冲）、wave（波浪），或 pulse_dir 目录下的 .pulse 文件名（不含扩展名）。",
+    }
+
+    action_require = [
+        "当用户希望让郊狼持续输出某种预设波形时使用本 Action，例如『使用星儿预设』『切换到脉冲模式』『让 A 通道持续输出』。",
+        "如果当前已经有波形循环在运行，切换预设时可以直接调用本 Action，新预设会自动覆盖旧的循环任务。",
+        "对于只想测试是否有电的场景，可以选择较温和的预设并配合较低强度。",
     ]
-    available_for_llm = True
 
-    async def execute(self, function_args: Dict[str, Any]) -> Dict[str, Any]:
+    async def execute(self) -> Tuple[bool, str]:
         if not _COYOTE_MANAGER.available:
-            return {
-                "name": self.name,
-                "content": "pydglab_ws 未安装或导入失败，请先安装 pydglab-ws 库或确认插件内置依赖路径可用",
-                "ok": False,
-            }
+            msg = "pydglab_ws 未安装或导入失败，请先安装 pydglab-ws 库或确认插件内置依赖路径可用。"
+            await self.send_text(msg)
+            return False, msg
 
         server_uri = (self.get_config("connection.server_uri", "") or "").strip()
         if not server_uri:
-            return {
-                "name": self.name,
-                "content": "未配置 DG-Lab WebSocket 服务端地址，请先通过 coyote_connect 完成初始化",
-                "ok": False,
-            }
+            msg = "未配置 DG-Lab WebSocket 服务端地址，请先通过 coyote_connect 完成初始化。"
+            await self.send_text(msg)
+            return False, msg
 
-        channel = str(function_args.get("channel", "")).strip()
-        preset_raw = str(function_args.get("preset", "")).strip().lower()
+        data = self.action_data or {}
+        channel = str(data.get("channel", "")).strip()
+        preset_raw = str(data.get("preset", "")).strip().lower()
         if preset_raw not in PRESET_PULSES:
-            return {
-                "name": self.name,
-                "content": f"未知预设波形: {preset_raw}，当前支持: {', '.join(PRESET_PULSES.keys())}",
-                "ok": False,
-            }
+            msg = f"未知预设波形: {preset_raw}，当前支持: {', '.join(PRESET_PULSES.keys())}"
+            await self.send_text(msg)
+            return False, msg
 
         pulses = PRESET_PULSES[preset_raw]
 
@@ -945,16 +870,13 @@ class CoyotePlayPresetTool(BaseTool):
         if ok:
             message = f"{message}（预设: {preset_raw}，循环模式）"
 
-        return {
-            "name": self.name,
-            "content": message,
-            "ok": ok,
-        }
+        await self.send_text(message)
+        return ok, message
 
 
 @register_plugin
 class DGLabCoyotePlugin(BasePlugin):
-    """DG-Lab 郊狼控制插件，通过 LLM 工具调用控制强度和波形。"""
+    """DG-Lab 郊狼控制插件，通过 Action 调用控制强度和波形。"""
 
     plugin_name: str = "dglab_coyote_plugin"
     enable_plugin: bool = False
@@ -1022,8 +944,8 @@ class DGLabCoyotePlugin(BasePlugin):
             ),
             "pulse_dir": ConfigField(
                 type=str,
-                default="pulses",
-                description="存放 DungeonLab 导出 .pulse 文件的子目录（相对于插件目录）",
+                default="pulse_dir",
+                description="存放 DungeonLab 导出 .pulse 文件的子目录（相对于插件目录），默认 dglab_coyote_plugin/pulse_dir",
             ),
         },
         "control": {
@@ -1039,17 +961,17 @@ class DGLabCoyotePlugin(BasePlugin):
 
     def get_plugin_components(self) -> List[Tuple[ComponentInfo, type]]:
         return [
-            (CoyoteConnectTool.get_tool_info(), CoyoteConnectTool),
-            (CoyoteSetStrengthTool.get_tool_info(), CoyoteSetStrengthTool),
-            (CoyoteAddWaveformTool.get_tool_info(), CoyoteAddWaveformTool),
-            (CoyoteClearWaveformTool.get_tool_info(), CoyoteClearWaveformTool),
-            (CoyotePlayPresetTool.get_tool_info(), CoyotePlayPresetTool),
+            (CoyoteConnectAction.get_action_info(), CoyoteConnectAction),
+            (CoyoteSetStrengthAction.get_action_info(), CoyoteSetStrengthAction),
+            (CoyoteAddWaveformAction.get_action_info(), CoyoteAddWaveformAction),
+            (CoyoteClearWaveformAction.get_action_info(), CoyoteClearWaveformAction),
+            (CoyotePlayPresetAction.get_action_info(), CoyotePlayPresetAction),
         ]
 
     def __init__(self, plugin_dir: str):
         super().__init__(plugin_dir)
         try:
-            pulse_dir = self.get_config("connection.pulse_dir", "pulses")
+            pulse_dir = self.get_config("connection.pulse_dir", "pulse_dir")
         except Exception:
-            pulse_dir = "pulses"
+            pulse_dir = "pulse_dir"
         load_pulse_presets_from_dir(Path(self.plugin_dir), str(pulse_dir))

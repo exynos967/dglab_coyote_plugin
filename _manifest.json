@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "name": "DG-Lab 郊狼控制插件 (DGLab Coyote Plugin)",
   "version": "1.0.0",
-  "description": "通过 DG-Lab WebSocket 接口连接郊狼设备，并提供 LLM 工具调用控制强度与波形的能力",
+  "description": "通过 DG-Lab WebSocket 接口连接郊狼设备，并提供 LLM Action 调用控制强度与波形的能力",
   "author": {
     "name": "薄暝",
     "url": "https://github.com/exynos967"
@@ -30,35 +30,35 @@
     "plugin_type": "integration",
     "components": [
       {
-        "type": "tool",
+        "type": "action",
         "name": "coyote_connect",
-        "description": "连接 DG-Lab WebSocket 服务端并获取扫码二维码"
+        "description": "连接 DG-Lab WebSocket 服务端并获取扫码二维码的 Action"
       },
       {
-        "type": "tool",
+        "type": "action",
         "name": "coyote_set_strength",
-        "description": "控制郊狼设备 A/B 通道的强度"
+        "description": "控制郊狼设备 A/B 通道强度的 Action"
       },
       {
-        "type": "tool",
+        "type": "action",
         "name": "coyote_add_waveform",
-        "description": "向郊狼设备追加波形数据"
+        "description": "向郊狼设备追加波形数据的 Action"
       },
       {
-        "type": "tool",
+        "type": "action",
         "name": "coyote_clear_waveform",
-        "description": "清空郊狼设备某个通道的波形队列"
+        "description": "清空郊狼设备某个通道波形队列的 Action"
       },
       {
-        "type": "tool",
+        "type": "action",
         "name": "coyote_play_preset",
-        "description": "在指定通道播放内置预设波形（steady/pulse/wave）"
+        "description": "在指定通道播放内置或 .pulse 预设波形（循环模式）的 Action"
       }
     ],
     "features": [
       "通过 WebSocket 连接 DG-Lab 郊狼设备",
-      "提供 LLM 可调用的强度控制工具",
-      "提供 LLM 可调用的波形控制与清空工具",
+      "提供 LLM 可调用的强度控制 Action",
+      "提供 LLM 可调用的波形控制与清空 Action",
       "通过配置文件控制连接参数与安全上限"
     ]
   }

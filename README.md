@@ -1,6 +1,6 @@
 # dglab_coyote_plugin
 
-DG-Lab 郊狼控制插件，用于在 MaiBot 中通过 LLM 工具调用控制 DG-Lab Coyote（郊狼）设备的连接、强度与波形。
+DG-Lab 郊狼控制插件，用于在 MaiBot 中通过 LLM **Action 组件**调用控制 DG-Lab Coyote（郊狼）设备的连接、强度与波形。
 
 插件基于官方 WebSocket 协议与 `pydglab-ws` 库实现，内置简单的 WS 服务端与长连接管理，支持：
 
@@ -14,8 +14,8 @@ DG-Lab 郊狼控制插件，用于在 MaiBot 中通过 LLM 工具调用控制 DG
 
 ## 1. 目录结构
 
-- `plugin.py`：插件主实现，包含连接管理与所有工具定义
-- `_manifest.json`：MaiBot 插件清单与工具暴露信息
+- `plugin.py`：插件主实现，包含连接管理与所有 Action 定义
+- `_manifest.json`：MaiBot 插件清单与组件（Action）暴露信息
 - `config.toml`：插件配置文件（运行后由宿主在插件目录生成）
 - `pulses/`：可选目录，存放从 DG-Lab App 导出的 `.pulse` 波形文件
 
@@ -68,7 +68,7 @@ bind_timeout = 60.0
 heartbeat_interval = 20.0
 
 # 存放 DungeonLab 导出 .pulse 文件的子目录（相对于插件目录）
-pulse_dir = "pulses"
+pulse_dir = "pulse_dir"
 ```
 
 ### 3.3 控制参数
@@ -81,41 +81,40 @@ max_intensity = 200
 
 ---
 
-## 4. 工具一览
+## 4. Action 一览
 
-插件对 LLM 暴露以下工具（工具名称在日志中会以 `工具xxx` 的形式出现）：
+插件对 LLM 暴露以下 Action（在 Action 决策系统中可见，名称与原有工具保持一致，便于迁移）：
 
 ### 4.1 `coyote_connect`
 
-建立与 DG-Lab App 的连接并获取二维码链接。
+建立与 DG-Lab App 的连接并获取二维码链接的 Action。
 
-- 参数：
+- `action_parameters`：
   - `server_uri`（可选）：覆盖配置里的 `connection.server_uri`
   - `register_timeout`（可选）
   - `bind_timeout`（可选）：>0 时会等待扫码结果，返回绑定状态
-- 用途：
-  - 插件启动后 **至少调用一次**，扫码绑定 App
-  - 返回字段中包含：
-    - `qrcode_url`：用于 App 扫码的链接
-    - `bind_result`：`SUCCESS` / `TIMEOUT` / 错误信息
+- 使用场景（简化自 `action_require`）：
+  - 需要首次连接 / 重新连接郊狼设备、获取绑定二维码时
+  - 控制强度或波形时提示未绑定 App，需要先完成扫码
 
 ### 4.2 `coyote_set_strength`
 
-控制 A/B 通道强度。
+控制 A/B 通道强度的 Action。
 
-- 参数：
+- `action_parameters`：
   - `channel`：`"A"` 或 `"B"`
   - `mode`：`"set"`（设定绝对值）、`"increase"`（增加）、`"decrease"`（减少）
   - `value`：整型数值（0–200 推荐），`increase/decrease` 时表示增量
-- 行为：
-  - 会自动调用内部的 `ensure_bind`，在需要时等待 App 完成绑定
-  - `set` 模式会按照 `control.max_intensity` 限制最大值
+- 使用场景：
+  - 用户明确要求“调高/调低/设为 X”时
+  - 首次控制时建议从 10–30 起步，用户确认后再提高
+  - 用户表示不适或要停时，将强度设为 0
 
 ### 4.3 `coyote_add_waveform`
 
-追加一次性波形数据。
+追加一次性波形数据的 Action。
 
-- 参数：
+- `action_parameters`：
   - `channel`：`"A"` 或 `"B"`
   - `pulses_json`：JSON 字符串数组，每项格式：
 
@@ -128,22 +127,22 @@ max_intensity = 200
     ]
     ```
 
-  - 每组包含 4 个频率和 4 个强度，内部会自动转换为 `add_pulses` 所需的结构。
+- 每组包含 4 个频率和 4 个强度，内部会自动转换为 `add_pulses` 所需的结构。
 
 ### 4.4 `coyote_clear_waveform`
 
-清空指定通道的波形队列，并停止该通道的循环任务。
+清空指定通道的波形队列并停止该通道循环任务的 Action。
 
-- 参数：
+- `action_parameters`：
   - `channel`：`"A"` 或 `"B"`
 
 用于停止持续输出或在切换预设前清空队列。
 
 ### 4.5 `coyote_play_preset`
 
-在指定通道上播放预设波形（**循环模式**），包括内置预设与 `.pulse` 文件预设。
+在指定通道上播放预设波形（**循环模式**）的 Action，包括内置预设与 `.pulse` 文件预设。
 
-- 参数：
+- `action_parameters`：
   - `channel`：`"A"` 或 `"B"`
   - `preset`：预设名称：
     - 内置：`steady`、`pulse`、`wave`
@@ -163,14 +162,14 @@ max_intensity = 200
 1. 在插件目录下创建子目录（若不存在）：
 
    ```bash
-   mkdir -p dglab_coyote_plugin/pulses
+   mkdir -p dglab_coyote_plugin/pulse_dir
    ```
 
 2. 将 App 导出的 `.pulse` 文件放入该目录，例如：
 
    ```text
    dglab_coyote_plugin/
-     pulses/
+     pulse_dir/
        128-星儿.pulse
        my-custom.pulse
    ```
@@ -223,4 +222,3 @@ max_intensity = 200
 - `[Coyote] 清空波形队列成功: channel=A`
 
 通过这些日志可以快速判断当前连接状态、绑定情况以及控制是否生效，便于在 MaiBot 中排查问题。
-
