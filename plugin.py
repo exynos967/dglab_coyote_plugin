@@ -490,6 +490,79 @@ PRESET_PULSES: Dict[str, List[Tuple[List[int], List[int]]]] = {
 }
 
 
+def parse_dungeonlab_pulse(content: str) -> List[Tuple[List[int], List[int]]]:
+    """从 DungeonLab 导出的 .pulse 文本解析出近似的波形数据。
+
+    说明：.pulse 原始格式较复杂，这里采用近似方案：
+    - 仅解析每个 section 中斜杠 `/` 后的强度点，如 `100.00-1`
+    - 将数值部分视为 0-100 的强度百分比，忽略后面的标志位
+    - 每 4 个点组成一次 PulseOperation，使用固定频率 80
+    """
+    if not content.startswith("Dungeonlab+pulse"):
+        return []
+
+    try:
+        _, rest = content.split(":", 1)
+    except ValueError:
+        return []
+
+    segments = rest.split("+section+")
+    strengths_all: List[float] = []
+    for seg in segments:
+        if "/" not in seg:
+            continue
+        _, data = seg.split("/", 1)
+        tokens = [t for t in data.split(",") if t]
+        for token in tokens:
+            token = token.strip()
+            if not token:
+                continue
+            # 形如 "100.00-1"
+            try:
+                val_str = token.split("-", 1)[0]
+                v = float(val_str)
+                strengths_all.append(v)
+            except ValueError:
+                continue
+
+    pulses: List[Tuple[List[int], List[int]]] = []
+    if not strengths_all:
+        return pulses
+
+    # 将强度序列按 4 个一组组装 PulseOperation
+    i = 0
+    while i < len(strengths_all):
+        group = strengths_all[i : i + 4]
+        if len(group) < 4:
+            group += [group[-1]] * (4 - len(group))
+        strengths = [max(0, min(100, int(round(v)))) for v in group]
+        freqs = [80, 80, 80, 80]
+        pulses.append((freqs, strengths))
+        i += 4
+
+    # 防止超出 pydglab_ws 限制，这里做一个保守截断（每次 add_pulses 上限为 86 组）
+    return pulses[:80]
+
+
+def load_pulse_presets_from_dir(base_dir: Path, subdir: str) -> None:
+    """从插件目录下的指定子目录加载 .pulse 文件为预设波形。"""
+    global PRESET_PULSES
+    dir_path = (base_dir / subdir).resolve()
+    if not dir_path.is_dir():
+        return
+
+    for file in dir_path.glob("*.pulse"):
+        try:
+            text = file.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        pulses = parse_dungeonlab_pulse(text)
+        if not pulses:
+            continue
+        preset_name = file.stem  # 例如 "128-星儿"
+        PRESET_PULSES[preset_name] = pulses
+
+
 class CoyoteConnectTool(BaseTool):
     """建立与 DG-Lab App 的连接并获取二维码。"""
 
@@ -825,9 +898,10 @@ class CoyotePlayPresetTool(BaseTool):
         (
             "preset",
             ToolParamType.STRING,
-            "预设波形名称，可选：steady（稳定）、pulse（脉冲）、wave（波浪）",
+            "预设波形名称，可选：steady（稳定）、pulse（脉冲）、wave（波浪），"
+            "或放在 pulse_dir 目录下的 .pulse 文件名（不含扩展名）",
             True,
-            ["steady", "pulse", "wave"],
+            None,
         ),
     ]
     available_for_llm = True
@@ -946,6 +1020,11 @@ class DGLabCoyotePlugin(BasePlugin):
                 max=120.0,
                 step=1.0,
             ),
+            "pulse_dir": ConfigField(
+                type=str,
+                default="pulses",
+                description="存放 DungeonLab 导出 .pulse 文件的子目录（相对于插件目录）",
+            ),
         },
         "control": {
             "max_intensity": ConfigField(
@@ -966,3 +1045,11 @@ class DGLabCoyotePlugin(BasePlugin):
             (CoyoteClearWaveformTool.get_tool_info(), CoyoteClearWaveformTool),
             (CoyotePlayPresetTool.get_tool_info(), CoyotePlayPresetTool),
         ]
+
+    def __init__(self, plugin_dir: str):
+        super().__init__(plugin_dir)
+        try:
+            pulse_dir = self.get_config("connection.pulse_dir", "pulses")
+        except Exception:
+            pulse_dir = "pulses"
+        load_pulse_presets_from_dir(Path(self.plugin_dir), str(pulse_dir))
