@@ -4,15 +4,15 @@
   "version": "1.0.0",
   "description": "通过 DG-Lab WebSocket 接口连接郊狼设备，并提供 LLM 工具调用控制强度与波形的能力",
   "author": {
-    "name": "MaiBot 社区",
-    "url": "https://github.com/MaiM-with-u"
+    "name": "薄暝",
+    "url": "https://github.com/exynos967"
   },
   "license": "GPL-v3.0-or-later",
   "host_application": {
-    "min_version": "0.8.0"
+    "min_version": "0.10.0"
   },
-  "homepage_url": "https://github.com/MaiM-with-u/maibot",
-  "repository_url": "https://github.com/MaiM-with-u/maibot",
+  "homepage_url": "https://github.com/exynos967/dglab_coyote_plugin",
+  "repository_url": "https://github.com/exynos967/dglab_coyote_plugin",
   "keywords": [
     "dglab",
     "coyote",
@@ -61,6 +61,5 @@
       "提供 LLM 可调用的波形控制与清空工具",
       "通过配置文件控制连接参数与安全上限"
     ]
-  },
-  "id": "MaiBot社区.dglab_coyote_plugin"
+  }
 }
