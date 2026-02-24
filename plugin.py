@@ -2,7 +2,7 @@ import asyncio
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 from urllib.parse import urlparse
 
 from src.plugin_system import (
@@ -416,7 +416,7 @@ class CoyoteConnectionManager:
                         pulse_ops.append((freq_tuple, strength_tuple))
                     channel = Channel.A if channel_name == "A" else Channel.B  # type: ignore[assignment]
                     await client.add_pulses(channel, *pulse_ops)  # type: ignore[arg-type]
-                except Exception as exc:  # noqa: BLE001
+                except Exception:  # noqa: BLE001
                     logger.exception("[Coyote] 波形循环下发失败")
                     break
                 await asyncio.sleep(sleep_interval)
@@ -488,6 +488,56 @@ PRESET_PULSES: Dict[str, List[Tuple[List[int], List[int]]]] = {
         ([40, 80, 40, 80], [30, 70, 30, 70]),
     ],
 }
+
+
+def build_server_uri_from_connection_config(
+    *,
+    explicit_server_uri: str | None,
+    server_scheme: str,
+    local_lan_ip: str,
+    server_port: Any,
+) -> str:
+    """按配置拼装 DG-Lab WebSocket 地址。"""
+    explicit_uri = (explicit_server_uri or "").strip()
+    if explicit_uri:
+        return explicit_uri
+
+    host = (local_lan_ip or "").strip()
+    if not host:
+        raise ValueError("未配置 connection.local_lan_ip，请填写运行插件机器的局域网 IP。")
+
+    scheme = (server_scheme or "ws").strip().lower()
+    if scheme not in {"ws", "wss"}:
+        raise ValueError(f"connection.server_scheme 配置无效: {scheme}，仅支持 ws 或 wss。")
+
+    try:
+        port = int(server_port)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("connection.server_port 必须是 1-65535 的整数。") from exc
+
+    if not 1 <= port <= 65535:
+        raise ValueError("connection.server_port 必须在 1-65535 范围内。")
+
+    return f"{scheme}://{host}:{port}"
+
+
+def resolve_server_uri(action: BaseAction, server_uri_override: Any | None = None) -> Tuple[str | None, str | None]:
+    """统一解析 Action 使用的 DG-Lab WebSocket 地址。"""
+    override_uri = str(server_uri_override).strip() if server_uri_override is not None else ""
+    explicit_server_uri = override_uri or str(action.get_config("connection.server_uri", "") or "").strip()
+
+    try:
+        return (
+            build_server_uri_from_connection_config(
+                explicit_server_uri=explicit_server_uri,
+                server_scheme=str(action.get_config("connection.server_scheme", "ws") or "ws"),
+                local_lan_ip=str(action.get_config("connection.local_lan_ip", "") or ""),
+                server_port=action.get_config("connection.server_port", 5678),
+            ),
+            None,
+        )
+    except ValueError as exc:
+        return None, str(exc)
 
 
 def parse_dungeonlab_pulse(content: str) -> List[Tuple[List[int], List[int]]]:
@@ -573,7 +623,7 @@ class CoyoteConnectAction(BaseAction):
     parallel_action = False
 
     action_parameters = {
-        "server_uri": "可选：覆盖配置 connection.server_uri 的 DG-Lab WebSocket 地址，例如 ws://127.0.0.1:5678。",
+        "server_uri": "可选：覆盖配置项解析出的 DG-Lab WebSocket 地址，例如 ws://192.168.1.23:5678。",
         "register_timeout": "可选：终端注册超时时间（秒），默认使用配置 connection.register_timeout。",
         "bind_timeout": "可选：等待 App 扫码绑定的超时时间（秒），<=0 表示不等待，默认使用配置 connection.bind_timeout。",
     }
@@ -591,11 +641,9 @@ class CoyoteConnectAction(BaseAction):
             return False, msg
 
         data = self.action_data or {}
-        server_uri_arg = data.get("server_uri")
-        server_uri_cfg = self.get_config("connection.server_uri", "")
-        server_uri = (server_uri_arg or server_uri_cfg or "").strip()
+        server_uri, error = resolve_server_uri(self, data.get("server_uri"))
         if not server_uri:
-            msg = "未配置 DG-Lab WebSocket 服务端地址，请在插件配置 connection.server_uri 中设置或通过参数 server_uri 传入。"
+            msg = error or "未配置 DG-Lab WebSocket 服务端地址，请检查 connection 配置。"
             await self.send_text(msg)
             return False, msg
 
@@ -655,9 +703,9 @@ class CoyoteSetStrengthAction(BaseAction):
             await self.send_text(msg)
             return False, msg
 
-        server_uri = (self.get_config("connection.server_uri", "") or "").strip()
+        server_uri, error = resolve_server_uri(self)
         if not server_uri:
-            msg = "未配置 DG-Lab WebSocket 服务端地址，请先通过 coyote_connect 完成初始化。"
+            msg = error or "未配置 DG-Lab WebSocket 服务端地址，请检查 connection 配置。"
             await self.send_text(msg)
             return False, msg
 
@@ -719,9 +767,9 @@ class CoyoteAddWaveformAction(BaseAction):
             await self.send_text(msg)
             return False, msg
 
-        server_uri = (self.get_config("connection.server_uri", "") or "").strip()
+        server_uri, error = resolve_server_uri(self)
         if not server_uri:
-            msg = "未配置 DG-Lab WebSocket 服务端地址，请先通过 coyote_connect 完成初始化。"
+            msg = error or "未配置 DG-Lab WebSocket 服务端地址，请检查 connection 配置。"
             await self.send_text(msg)
             return False, msg
 
@@ -798,9 +846,9 @@ class CoyoteClearWaveformAction(BaseAction):
             await self.send_text(msg)
             return False, msg
 
-        server_uri = (self.get_config("connection.server_uri", "") or "").strip()
+        server_uri, error = resolve_server_uri(self)
         if not server_uri:
-            msg = "未配置 DG-Lab WebSocket 服务端地址，请先通过 coyote_connect 完成初始化。"
+            msg = error or "未配置 DG-Lab WebSocket 服务端地址，请检查 connection 配置。"
             await self.send_text(msg)
             return False, msg
 
@@ -842,9 +890,9 @@ class CoyotePlayPresetAction(BaseAction):
             await self.send_text(msg)
             return False, msg
 
-        server_uri = (self.get_config("connection.server_uri", "") or "").strip()
+        server_uri, error = resolve_server_uri(self)
         if not server_uri:
-            msg = "未配置 DG-Lab WebSocket 服务端地址，请先通过 coyote_connect 完成初始化。"
+            msg = error or "未配置 DG-Lab WebSocket 服务端地址，请检查 connection 配置。"
             await self.send_text(msg)
             return False, msg
 
@@ -902,7 +950,7 @@ class DGLabCoyotePlugin(BasePlugin):
         "plugin": {
             "config_version": ConfigField(
                 type=str,
-                default="1.0.0",
+                default="1.1.0",
                 description="配置文件版本",
             ),
             "enabled": ConfigField(
@@ -912,11 +960,42 @@ class DGLabCoyotePlugin(BasePlugin):
             ),
         },
         "connection": {
+            "local_lan_ip": ConfigField(
+                type=str,
+                default="127.0.0.1",
+                description="运行插件机器的局域网 IP（建议必填）",
+                required=True,
+                placeholder="例如：127.0.0.1 或 192.168.1.23",
+                hint="默认 127.0.0.1（本机回环）。服务器部署时请改为手机可访问到的局域网 IP。",
+                pattern=r"^(?:\d{1,3}\.){3}\d{1,3}$",
+                example="127.0.0.1",
+                order=0,
+            ),
+            "server_port": ConfigField(
+                type=int,
+                default=5678,
+                description="DG-Lab WebSocket 端口",
+                min=1,
+                max=65535,
+                example="5678",
+                order=1,
+            ),
+            "server_scheme": ConfigField(
+                type=str,
+                default="ws",
+                description="DG-Lab WebSocket 协议",
+                choices=["ws", "wss"],
+                example="ws",
+                order=2,
+            ),
             "server_uri": ConfigField(
                 type=str,
-                default="ws://127.0.0.1:5678",
-                description="DG-Lab WebSocket 服务端地址",
-                example="ws://127.0.0.1:5678",
+                default="",
+                description="可选：完整 DG-Lab WebSocket 地址（填写后优先于 local_lan_ip + server_port + server_scheme）",
+                placeholder="例如：ws://192.168.1.23:5678",
+                hint="仅在需要自定义完整地址时填写；常规场景建议填写 local_lan_ip。",
+                example="ws://192.168.1.23:5678",
+                order=3,
             ),
             "register_timeout": ConfigField(
                 type=float,
@@ -925,6 +1004,7 @@ class DGLabCoyotePlugin(BasePlugin):
                 min=1.0,
                 max=60.0,
                 step=1.0,
+                order=4,
             ),
             "bind_timeout": ConfigField(
                 type=float,
@@ -933,6 +1013,7 @@ class DGLabCoyotePlugin(BasePlugin):
                 min=5.0,
                 max=600.0,
                 step=5.0,
+                order=5,
             ),
             "heartbeat_interval": ConfigField(
                 type=float,
@@ -941,11 +1022,13 @@ class DGLabCoyotePlugin(BasePlugin):
                 min=5.0,
                 max=120.0,
                 step=1.0,
+                order=6,
             ),
             "pulse_dir": ConfigField(
                 type=str,
                 default="pulse_dir",
                 description="存放 DungeonLab 导出 .pulse 文件的子目录（相对于插件目录），默认 dglab_coyote_plugin/pulse_dir",
+                order=7,
             ),
         },
         "control": {

@@ -47,7 +47,7 @@ pip install "pydglab-ws>=1.1.0" "websockets==12.0"
 
 ```toml
 [plugin]
-config_version = "1.0.0"
+config_version = "1.1.0"
 enabled = true          # 是否启用插件
 ```
 
@@ -55,8 +55,18 @@ enabled = true          # 是否启用插件
 
 ```toml
 [connection]
-# DG-Lab WebSocket 服务端地址，一般使用本机 WS 服务
-server_uri = "ws://127.0.0.1:5678"
+# 运行插件机器的局域网 IP（默认 127.0.0.1）
+# 重要：服务器部署时必须改成手机可访问到的局域网 IP，例如 192.168.1.23
+local_lan_ip = "127.0.0.1"
+
+# DG-Lab WebSocket 端口
+server_port = 5678
+
+# 协议（ws / wss）
+server_scheme = "ws"
+
+# 可选：完整地址，填写后会覆盖上面三项组合
+server_uri = ""
 
 # 终端注册超时时间（秒），通常保持默认即可
 register_timeout = 10.0
@@ -90,7 +100,7 @@ max_intensity = 200
 建立与 DG-Lab App 的连接并获取二维码链接的 Action。
 
 - `action_parameters`：
-  - `server_uri`（可选）：覆盖配置里的 `connection.server_uri`
+  - `server_uri`（可选）：覆盖配置解析出的地址（优先级高于 `local_lan_ip + server_port + server_scheme`）
   - `register_timeout`（可选）
   - `bind_timeout`（可选）：>0 时会等待扫码结果，返回绑定状态
 - 使用场景（简化自 `action_require`）：
@@ -194,7 +204,9 @@ max_intensity = 200
 2. **配置并启用插件**
    - 在 `config.toml` 中设置：
      - `[plugin].enabled = true`
-     - `[connection].server_uri` 设置为本机 DG-Lab WS 地址
+     - 本地直连可保持 `[connection].local_lan_ip = 127.0.0.1`
+     - 如果插件运行在服务器/远端主机，必须把 `[connection].local_lan_ip` 改为该主机的局域网 IP（与手机在同一网段）
+     - 可选：按需调整 `[connection].server_port` 与 `[connection].server_scheme`
 
 3. **绑定 DG-Lab App**
    - 调用 `coyote_connect`
