@@ -1,6 +1,6 @@
 # dglab_coyote_plugin
 
-DG-Lab 郊狼控制插件，用于在 MaiBot 中通过 LLM **Action 组件**调用控制 DG-Lab Coyote（郊狼）设备的连接、强度与波形。
+DG-Lab 郊狼控制插件，用于在 MaiBot 中通过用户 **Command 指令**控制 DG-Lab Coyote（郊狼）设备的连接与通道输出。
 
 插件基于官方 WebSocket 协议与 `pydglab-ws` 库实现，内置简单的 WS 服务端与长连接管理，支持：
 
@@ -9,13 +9,14 @@ DG-Lab 郊狼控制插件，用于在 MaiBot 中通过 LLM **Action 组件**调�
 - 下发一次性波形
 - 播放内置/自定义预设波形并循环推送
 - 从 DG-Lab App 导出的 `.pulse` 波形文件加载为预设
+- 支持连接/断连设备、开启/关闭通道输出的显式指令
 
 ---
 
 ## 1. 目录结构
 
-- `plugin.py`：插件主实现，包含连接管理与所有 Action 定义
-- `_manifest.json`：MaiBot 插件清单与组件（Action）暴露信息
+- `plugin.py`：插件主实现，包含连接管理与所有 Command 定义
+- `_manifest.json`：MaiBot 插件清单与组件（Command）暴露信息
 - `config.toml`：插件配置文件（运行后由宿主在插件目录生成）
 - `pulses/`：可选目录，存放从 DG-Lab App 导出的 `.pulse` 波形文件
 
@@ -47,7 +48,7 @@ pip install "pydglab-ws>=1.1.0" "websockets==12.0"
 
 ```toml
 [plugin]
-config_version = "1.1.0"
+config_version = "1.3.0"
 enabled = true          # 是否启用插件
 ```
 
@@ -87,83 +88,28 @@ pulse_dir = "pulse_dir"
 [control]
 # 强度上限（0-200），set 模式会自动裁剪到此上限
 max_intensity = 200
+
+# /coyote_channel_on 未传 preset 时使用的默认预设
+command_default_preset = "steady"
+
+# /coyote_channel_on 未传 strength 时使用的默认强度
+command_default_strength = 30
 ```
 
 ---
 
-## 4. Action 一览
+## 4. Command 指令一览
 
-插件对 LLM 暴露以下 Action（在 Action 决策系统中可见，名称与原有工具保持一致，便于迁移）：
+以下是新增的用户指令（命令组件）：
 
-### 4.1 `coyote_connect`
-
-建立与 DG-Lab App 的连接并获取二维码链接的 Action。
-
-- `action_parameters`：
-  - `server_uri`（可选）：覆盖配置解析出的地址（优先级高于 `local_lan_ip + server_port + server_scheme`）
-  - `register_timeout`（可选）
-  - `bind_timeout`（可选）：>0 时会等待扫码结果，返回绑定状态
-- 使用场景（简化自 `action_require`）：
-  - 需要首次连接 / 重新连接郊狼设备、获取绑定二维码时
-  - 控制强度或波形时提示未绑定 App，需要先完成扫码
-
-### 4.2 `coyote_set_strength`
-
-控制 A/B 通道强度的 Action。
-
-- `action_parameters`：
-  - `channel`：`"A"` 或 `"B"`
-  - `mode`：`"set"`（设定绝对值）、`"increase"`（增加）、`"decrease"`（减少）
-  - `value`：整型数值（0–200 推荐），`increase/decrease` 时表示增量
-- 使用场景：
-  - 用户明确要求“调高/调低/设为 X”时
-  - 首次控制时建议从 10–30 起步，用户确认后再提高
-  - 用户表示不适或要停时，将强度设为 0
-
-### 4.3 `coyote_add_waveform`
-
-追加一次性波形数据的 Action。
-
-- `action_parameters`：
-  - `channel`：`"A"` 或 `"B"`
-  - `pulses_json`：JSON 字符串数组，每项格式：
-
-    ```json
-    [
-      {
-        "frequency": [10, 20, 30, 40],
-        "strength":  [10, 20, 30, 40]
-      }
-    ]
-    ```
-
-- 每组包含 4 个频率和 4 个强度，内部会自动转换为 `add_pulses` 所需的结构。
-
-### 4.4 `coyote_clear_waveform`
-
-清空指定通道的波形队列并停止该通道循环任务的 Action。
-
-- `action_parameters`：
-  - `channel`：`"A"` 或 `"B"`
-
-用于停止持续输出或在切换预设前清空队列。
-
-### 4.5 `coyote_play_preset`
-
-在指定通道上播放预设波形（**循环模式**）的 Action，包括内置预设与 `.pulse` 文件预设。
-
-- `action_parameters`：
-  - `channel`：`"A"` 或 `"B"`
-  - `preset`：预设名称：
-    - 内置：`steady`、`pulse`、`wave`
-    - `.pulse` 文件：文件名（不含扩展名），例如 `128-星儿`
-- 行为：
-  - 先立即向该通道下发一次完整波形
-  - 然后启动后台任务，周期性重复调用 `add_pulses` 保持持续输出
-  - 若同一通道已有循环任务，会先取消旧任务再启动新任务
-  - 要停止循环，可调用 `coyote_clear_waveform` 或将强度调为 0
-
----
+- `/coyote_connect [bind_timeout]` 或 `/郊狼连接 [bind_timeout]`
+  - 连接设备并返回二维码，可选覆盖等待绑定超时（秒）
+- `/coyote_disconnect` 或 `/郊狼断连`
+  - 断开设备连接，并自动关闭插件内置 WS 服务端
+- `/coyote_channel_on <A|B> [preset] [strength]` 或 `/郊狼开启通道 <A|B> [preset] [strength]`
+  - 开启指定通道输出：启动预设循环波形并设置强度
+- `/coyote_channel_off <A|B>` 或 `/郊狼关闭通道 <A|B>`
+  - 关闭指定通道输出：强度归零并清空通道波形
 
 ## 5. 使用 `.pulse` 波形文件
 
@@ -186,14 +132,12 @@ max_intensity = 200
 
 3. 重新启动 MaiBot / 重新加载插件。
 
-4. 通过 `coyote_play_preset` 播放对应预设：
+4. 通过 `coyote_channel_on` 指令播放对应预设：
 
-   - `preset = "128-星儿"`
-   - 或 `preset = "my-custom"`
+   - `/coyote_channel_on A 128-星儿`
+   - `/coyote_channel_on B my-custom`
 
 > 说明：当前解析逻辑会从 `.pulse` 文件中提取强度曲线，并用固定频率构造近似波形，同时对长度做了安全截断，以满足 DG-Lab 协议限制。
-
----
 
 ## 6. 典型使用流程
 
@@ -214,12 +158,12 @@ max_intensity = 200
    - 绑定成功后日志中会出现：
      - `[Coyote] App 绑定成功（ensure_bind 完成）`
 
-4. **控制强度与波形**
-   - 通过 `coyote_set_strength` 调整 A/B 通道强度
-   - 使用 `coyote_play_preset` 播放内置或 `.pulse` 预设（循环模式）
-   - 使用 `coyote_clear_waveform` 停止某个通道的波形输出
-
----
+4. **通过指令启停通道 / 连接管理**
+   - 连接：`/coyote_connect`
+   - 开启 A 通道（默认预设/强度）：`/coyote_channel_on A`
+   - 开启 B 通道（指定预设和强度）：`/coyote_channel_on B pulse 40`
+   - 关闭通道：`/coyote_channel_off A`
+   - 断连并关闭 WS 服务端：`/coyote_disconnect`
 
 ## 7. 日志说明
 
@@ -232,5 +176,6 @@ max_intensity = 200
 - `[Coyote] 下发波形成功: channel=A, pulses_count=1`
 - `[Coyote] 启动波形循环: channel=A, pulses_count=N`
 - `[Coyote] 清空波形队列成功: channel=A`
+- `[Coyote] 断连时通道清理存在失败: ...`（若断连前清理出现异常）
 
 通过这些日志可以快速判断当前连接状态、绑定情况以及控制是否生效，便于在 MaiBot 中排查问题。
