@@ -210,8 +210,10 @@ class CoyoteConnectionManager:
             register_timeout,
             heartbeat_interval=None,
         )
-        # 对于本地终端，需要显式传入服务端 URI
-        qrcode_url = client.get_qrcode(self._server_uri)  # type: ignore[arg-type]
+        qrcode_url = await self._wait_qrcode_url(
+            client=client,
+            wait_timeout=register_timeout,
+        )
 
         bind_success = False
         bind_result: str | None = None
@@ -239,6 +241,27 @@ class CoyoteConnectionManager:
             "bind_result": bind_result,
             "status": status,
         }
+
+    async def _wait_qrcode_url(self, client: Any, wait_timeout: float | None) -> str:
+        """等待二维码 URL 就绪，避免首次连接时立即读取为空。"""
+        timeout_seconds = max(0.0, float(wait_timeout or 0.0))
+        deadline = asyncio.get_running_loop().time() + timeout_seconds
+        qrcode_url = ""
+
+        while True:
+            try:
+                qrcode_url = str(client.get_qrcode(self._server_uri) or "").strip()  # type: ignore[arg-type]
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"[Coyote] 获取二维码链接失败: {exc}")
+                qrcode_url = ""
+
+            if qrcode_url:
+                return qrcode_url
+
+            if timeout_seconds <= 0 or asyncio.get_running_loop().time() >= deadline:
+                return ""
+
+            await asyncio.sleep(0.2)
 
     async def ensure_ready_for_control(
         self,

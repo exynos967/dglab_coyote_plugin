@@ -70,6 +70,7 @@ server_scheme = "ws"
 server_uri = ""
 
 # 终端注册超时时间（秒），通常保持默认即可
+# 同时用于 /coyote_connect 首次连接时等待二维码就绪
 register_timeout = 10.0
 
 # 等待 App 扫码完成绑定的时间（秒）

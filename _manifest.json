@@ -1,7 +1,7 @@
 {
   "manifest_version": 1,
   "name": "DG-Lab 郊狼控制插件 (DGLab Coyote Plugin)",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "通过 DG-Lab WebSocket 接口连接郊狼设备，并提供 Command 指令控制连接与通道输出的能力",
   "author": {
     "name": "薄暝",
